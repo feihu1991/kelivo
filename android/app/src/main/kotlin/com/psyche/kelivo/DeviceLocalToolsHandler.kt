@@ -71,6 +71,11 @@ class DeviceLocalToolsHandler(private val activity: Activity) {
                     arrayOf(Manifest.permission.READ_CALENDAR, Manifest.permission.WRITE_CALENDAR),
                     result,
                 ) { runAsync(result) { createCalendarEvent(JSONObject(argsJson)) } }
+                // Phase 1: 文件读写 + API 调用
+                "readFile" -> runAsync(result) { readFile(JSONObject(argsJson)) }
+                "writeFile" -> runAsync(result) { writeFile(JSONObject(argsJson)) }
+                "listFiles" -> runAsync(result) { listFiles(JSONObject(argsJson)) }
+                "apiCall" -> runAsync(result) { apiCall(JSONObject(argsJson)) }
                 else -> result.notImplemented()
             }
         }
@@ -621,5 +626,213 @@ class DeviceLocalToolsHandler(private val activity: Activity) {
         runCatching { return LocalDateTime.parse(text).atZone(zone) }
         runCatching { return LocalDate.parse(text).atStartOfDay(zone) }
         error("Invalid time format: '$text'. Use ISO-8601 date/date-time or epoch milliseconds.")
+    }
+
+    // ---------------------------------------------------------------------
+    // File Read/Write (Phase 1)
+    // ---------------------------------------------------------------------
+
+    /**
+     * 读取文件内容。
+     * 支持应用私有目录和外部存储。
+     */
+    private fun readFile(params: JSONObject): String {
+        val path = params.optString("path").takeIf { it.isNotBlank() }
+            ?: return errorPayload("MISSING_REQUIRED", "'path' is required.")
+        val encoding = params.optString("encoding").takeIf { it.isNotBlank() } ?: "utf8"
+
+        val file = resolveFile(path)
+        if (!file.exists()) {
+            return errorPayload("FILE_NOT_FOUND", "File not found: $path")
+        }
+        if (file.isDirectory) {
+            return errorPayload("IS_DIRECTORY", "Path is a directory, not a file: $path")
+        }
+
+        return try {
+            val content = if (encoding == "base64") {
+                android.util.Base64.encodeToString(file.readBytes(), android.util.Base64.NO_WRAP)
+            } else {
+                file.readText(Charsets.UTF_8)
+            }
+            JSONObject()
+                .put("path", path)
+                .put("size", file.length())
+                .put("encoding", encoding)
+                .put("content", content)
+                .toString()
+        } catch (e: Exception) {
+            errorPayload("READ_ERROR", "Failed to read file: ${e.message}")
+        }
+    }
+
+    /**
+     * 写入文件内容。
+     * 支持 overwrite 和 append 两种模式。
+     */
+    private fun writeFile(params: JSONObject): String {
+        val path = params.optString("path").takeIf { it.isNotBlank() }
+            ?: return errorPayload("MISSING_REQUIRED", "'path' is required.")
+        val content = params.optString("content").takeIf { it.isNotBlank() }
+            ?: return errorPayload("MISSING_REQUIRED", "'content' is required.")
+        val mode = params.optString("mode").takeIf { it.isNotBlank() } ?: "overwrite"
+        val encoding = params.optString("encoding").takeIf { it.isNotBlank() } ?: "utf8"
+
+        val file = resolveFile(path)
+
+        return try {
+            // 确保父目录存在
+            file.parentFile?.mkdirs()
+
+            if (encoding == "base64") {
+                val bytes = android.util.Base64.decode(content, android.util.Base64.NO_WRAP)
+                if (mode == "append") {
+                    file.appendBytes(bytes)
+                } else {
+                    file.writeBytes(bytes)
+                }
+            } else {
+                if (mode == "append") {
+                    file.appendText(content, Charsets.UTF_8)
+                } else {
+                    file.writeText(content, Charsets.UTF_8)
+                }
+            }
+
+            JSONObject()
+                .put("success", true)
+                .put("path", path)
+                .put("size", file.length())
+                .put("mode", mode)
+                .toString()
+        } catch (e: Exception) {
+            errorPayload("WRITE_ERROR", "Failed to write file: ${e.message}")
+        }
+    }
+
+    /**
+     * 列出目录下的文件和子目录。
+     */
+    private fun listFiles(params: JSONObject): String {
+        val path = params.optString("path").takeIf { it.isNotBlank() }
+            ?: return errorPayload("MISSING_REQUIRED", "'path' is required.")
+        val recursive = params.optBoolean("recursive", false)
+        val maxDepth = params.optInt("max_depth", 3).coerceIn(1, 10)
+
+        val dir = resolveFile(path)
+        if (!dir.exists()) {
+            return errorPayload("PATH_NOT_FOUND", "Path not found: $path")
+        }
+        if (!dir.isDirectory) {
+            return errorPayload("NOT_DIRECTORY", "Path is not a directory: $path")
+        }
+
+        return try {
+            val files = JSONArray()
+            listFilesRecursive(dir, files, recursive, maxDepth, 0)
+            JSONObject()
+                .put("path", path)
+                .put("count", files.length())
+                .put("files", files)
+                .toString()
+        } catch (e: Exception) {
+            errorPayload("LIST_ERROR", "Failed to list files: ${e.message}")
+        }
+    }
+
+    private fun listFilesRecursive(
+        dir: java.io.File,
+        result: JSONArray,
+        recursive: Boolean,
+        maxDepth: Int,
+        currentDepth: Int
+    ) {
+        val files = dir.listFiles() ?: return
+        for (file in files) {
+            val obj = JSONObject()
+                .put("name", file.name)
+                .put("path", file.absolutePath)
+                .put("is_directory", file.isDirectory)
+                .put("size", if (file.isFile) file.length() else 0)
+                .put("last_modified", file.lastModified())
+            result.put(obj)
+
+            if (recursive && file.isDirectory && currentDepth < maxDepth) {
+                listFilesRecursive(file, result, true, maxDepth, currentDepth + 1)
+            }
+        }
+    }
+
+    /**
+     * 解析文件路径。
+     * - 以 / 开头的视为绝对路径
+     * - 其他视为应用私有目录下的相对路径
+     */
+    private fun resolveFile(path: String): java.io.File {
+        return if (path.startsWith("/")) {
+            java.io.File(path)
+        } else {
+            java.io.File(activity.filesDir, path)
+        }
+    }
+
+    // ---------------------------------------------------------------------
+    // API Call (Phase 1)
+    // ---------------------------------------------------------------------
+
+    /**
+     * 调用 HTTP API。
+     */
+    private fun apiCall(params: JSONObject): String {
+        val url = params.optString("url").takeIf { it.isNotBlank() }
+            ?: return errorPayload("MISSING_REQUIRED", "'url' is required.")
+        val method = params.optString("method").takeIf { it.isNotBlank() } ?: "GET"
+        val headersJson = params.optJSONObject("headers")
+        val body = params.optString("body").takeIf { it.isNotBlank() }
+        val timeoutMs = params.optInt("timeout_ms", 30000).coerceIn(1000, 120000)
+
+        return try {
+            val client = java.net.HttpURLConnection(java.net.URL(url).toURL().openConnection() as java.net.HttpURLConnection).apply {
+                requestMethod = method.uppercase()
+                connectTimeout = timeoutMs
+                readTimeout = timeoutMs
+                setRequestProperty("User-Agent", "Kelivo/1.0")
+
+                // 设置请求头
+                headersJson?.keys()?.forEach { key ->
+                    setRequestProperty(key, headersJson.getString(key))
+                }
+
+                // 如果有 body
+                if (body != null && method.uppercase() in listOf("POST", "PUT", "PATCH")) {
+                    doOutput = true
+                    setRequestProperty("Content-Type", "application/json")
+                    outputStream.write(body.toByteArray(Charsets.UTF_8))
+                }
+            }
+
+            val responseCode = client.responseCode
+            val responseBody = try {
+                client.inputStream.bufferedReader(Charsets.UTF_8).readText()
+            } catch (e: Exception) {
+                client.errorStream?.bufferedReader(Charsets.UTF_8)?.readText() ?: ""
+            }
+
+            // 尝试解析 JSON 响应
+            val parsedBody = try {
+                JSONObject(responseBody)
+            } catch (e: Exception) {
+                responseBody
+            }
+
+            JSONObject()
+                .put("status", responseCode)
+                .put("url", url)
+                .put("method", method)
+                .put("body", parsedBody)
+                .toString()
+        } catch (e: Exception) {
+            errorPayload("API_ERROR", "API call failed: ${e.message}")
+        }
     }
 }
