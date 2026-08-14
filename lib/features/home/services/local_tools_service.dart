@@ -5,6 +5,7 @@ import 'package:flutter/services.dart';
 import 'package:math_expressions/math_expressions.dart';
 
 import '../../../core/models/assistant.dart';
+import '../../accessibility/accessibility_tools_service.dart';
 
 typedef TextToSpeechStarter = Future<void> Function(String text);
 
@@ -512,6 +513,11 @@ class LocalToolsService {
          },
        });
      }
+     // Phase 2: 无障碍服务工具
+     final accessibilityEnabled = await AccessibilityTools.isEnabled();
+     if (accessibilityEnabled) {
+       tools.addAll(AccessibilityToolDefinitions.buildDefinitions(enabled: true));
+     }
     return tools;
   }
 
@@ -561,6 +567,48 @@ class LocalToolsService {
      // Phase 1: API 调用
      if (name == LocalToolNames.apiCall) {
        return _invokeDeviceTool('apiCall', args);
+     }
+     // Phase 2: 无障碍服务工具
+     if (name == AccessibilityToolNames.readScreen) {
+       final format = args['format']?.toString() ?? 'tree';
+       final result = await AccessibilityTools.readScreen(format: format);
+       return jsonEncode(result);
+     }
+     if (name == AccessibilityToolNames.clickElement) {
+       final result = await AccessibilityTools.findAndClick(
+         text: args['text']?.toString(),
+         id: args['id']?.toString(),
+         description: args['description']?.toString(),
+         index: args['index'] as int? ?? 0,
+       );
+       return jsonEncode(result);
+     }
+     if (name == AccessibilityToolNames.inputText) {
+       final result = await AccessibilityTools.findAndInput(
+         text: args['text']?.toString() ?? '',
+         target: args['target']?.toString(),
+         targetId: args['target_id']?.toString(),
+       );
+       return jsonEncode(result);
+     }
+     if (name == AccessibilityToolNames.swipeScreen) {
+       final result = await AccessibilityTools.swipe(
+         direction: args['direction']?.toString() ?? 'up',
+       );
+       return jsonEncode(result);
+     }
+     if (name == AccessibilityToolNames.pressButton) {
+       final result = await AccessibilityTools.pressButton(
+         button: args['button']?.toString() ?? 'back',
+       );
+       return jsonEncode(result);
+     }
+     if (name == AccessibilityToolNames.openApp) {
+       final result = await AccessibilityTools.openApp(
+         packageName: args['package_name']?.toString(),
+         appName: args['app_name']?.toString(),
+       );
+       return jsonEncode(result);
      }
     return null;
   }

@@ -1,0 +1,4 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="accessibility_service_description">Kelivo AI 助手需要无障碍权限来帮助您操作手机：读取屏幕内容、点击按钮、输入文字等。此权限仅在您主动使用 AI 助手功能时才会被激活。</string>
+</resources>
