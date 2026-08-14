@@ -5,6 +5,7 @@ import 'package:flutter/services.dart';
 import 'package:math_expressions/math_expressions.dart';
 
 import '../../../core/models/assistant.dart';
+import '../../accessibility/accessibility_tools_service.dart';
 
 typedef TextToSpeechStarter = Future<void> Function(String text);
 
@@ -19,6 +20,11 @@ class LocalToolNames {
   static const String screenTime = 'get_screen_time';
   static const String calendarQuery = 'calendar_query';
   static const String calendarCreate = 'calendar_create';
+  // Phase 1: 文件读写 + API 调用
+  static const String readFile = 'read_file';
+  static const String writeFile = 'write_file';
+  static const String listFiles = 'list_files';
+  static const String apiCall = 'api_call';
 }
 
 /// Platform availability of the device-backed local tools (implemented over
@@ -374,6 +380,144 @@ class LocalToolsService {
          },
        });
      }
+     // Phase 1: 文件读写工具
+     if (assistant.localToolIds.contains(LocalToolNames.readFile)) {
+       tools.add({
+         'type': 'function',
+         'function': {
+           'name': LocalToolNames.readFile,
+           'description':
+               'Read the content of a file on the device. ' 
+               'Supports application private directory (relative path) and external storage (absolute path). ' 
+               'Returns the file content as text or base64 encoded.',
+           'parameters': {
+             'type': 'object',
+             'properties': {
+               'path': {
+                 'type': 'string',
+                 'description': 'File path. Relative path for app private directory, absolute path starting with / for external storage.',
+               },
+               'encoding': {
+                 'type': 'string',
+                 'enum': ['utf8', 'base64'],
+                 'description': 'Content encoding. Default utf8.',
+               },
+             },
+             'required': ['path'],
+           },
+         },
+       });
+     }
+     if (assistant.localToolIds.contains(LocalToolNames.writeFile)) {
+       tools.add({
+         'type': 'function',
+         'function': {
+           'name': LocalToolNames.writeFile,
+           'description':
+               'Write content to a file on the device. ' 
+               'Creates parent directories if needed. ' 
+               'Supports overwrite and append modes.',
+           'parameters': {
+             'type': 'object',
+             'properties': {
+               'path': {
+                 'type': 'string',
+                 'description': 'File path. Relative path for app private directory, absolute path for external storage.',
+               },
+               'content': {
+                 'type': 'string',
+                 'description': 'Content to write.',
+               },
+               'mode': {
+                 'type': 'string',
+                 'enum': ['overwrite', 'append'],
+                 'description': 'Write mode. Default overwrite.',
+               },
+               'encoding': {
+                 'type': 'string',
+                 'enum': ['utf8', 'base64'],
+                 'description': 'Content encoding. Default utf8.',
+               },
+             },
+             'required': ['path', 'content'],
+           },
+         },
+       });
+     }
+     if (assistant.localToolIds.contains(LocalToolNames.listFiles)) {
+       tools.add({
+         'type': 'function',
+         'function': {
+           'name': LocalToolNames.listFiles,
+           'description':
+               'List files and directories in a directory on the device. ' 
+               'Returns file names, sizes, and types.',
+           'parameters': {
+             'type': 'object',
+             'properties': {
+               'path': {
+                 'type': 'string',
+                 'description': 'Directory path.',
+               },
+               'recursive': {
+                 'type': 'boolean',
+                 'description': 'Whether to list files recursively. Default false.',
+               },
+               'max_depth': {
+                 'type': 'integer',
+                 'description': 'Maximum recursion depth when recursive is true. Default 3.',
+               },
+             },
+             'required': ['path'],
+           },
+         },
+       });
+     }
+     // Phase 1: API 调用工具
+     if (assistant.localToolIds.contains(LocalToolNames.apiCall)) {
+       tools.add({
+         'type': 'function',
+         'function': {
+           'name': LocalToolNames.apiCall,
+           'description':
+               'Make an HTTP API call. ' 
+               'Supports GET, POST, PUT, DELETE methods. ' 
+               'Returns the response status, headers, and body.',
+           'parameters': {
+             'type': 'object',
+             'properties': {
+               'url': {
+                 'type': 'string',
+                 'description': 'The URL to call.',
+               },
+               'method': {
+                 'type': 'string',
+                 'enum': ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'],
+                 'description': 'HTTP method. Default GET.',
+               },
+               'headers': {
+                 'type': 'object',
+                 'description': 'Request headers as key-value pairs.',
+               },
+               'body': {
+                 'type': 'string',
+                 'description': 'Request body (JSON string) for POST/PUT/PATCH.',
+               },
+               'timeout_ms': {
+                 'type': 'integer',
+                 'description': 'Request timeout in milliseconds. Default 30000.',
+               },
+             },
+             'required': ['url'],
+           },
+         },
+       });
+     }
+     // Phase 2: 无障碍服务工具
+     final accessibilityEnabled = await AccessibilityTools.isEnabled();
+     if (accessibilityEnabled) {
+       tools.addAll(AccessibilityToolDefinitions.buildDefinitions(enabled: true));
+     }
     return tools;
   }
 
@@ -409,6 +553,62 @@ class LocalToolsService {
      if (name == LocalToolNames.calendarCreate &&
          DeviceLocalTools.calendarSupported) {
        return _invokeDeviceTool('createCalendarEvent', args);
+     }
+     // Phase 1: 文件读写
+     if (name == LocalToolNames.readFile) {
+       return _invokeDeviceTool('readFile', args);
+     }
+     if (name == LocalToolNames.writeFile) {
+       return _invokeDeviceTool('writeFile', args);
+     }
+     if (name == LocalToolNames.listFiles) {
+       return _invokeDeviceTool('listFiles', args);
+     }
+     // Phase 1: API 调用
+     if (name == LocalToolNames.apiCall) {
+       return _invokeDeviceTool('apiCall', args);
+     }
+     // Phase 2: 无障碍服务工具
+     if (name == AccessibilityToolNames.readScreen) {
+       final format = args['format']?.toString() ?? 'tree';
+       final result = await AccessibilityTools.readScreen(format: format);
+       return jsonEncode(result);
+     }
+     if (name == AccessibilityToolNames.clickElement) {
+       final result = await AccessibilityTools.findAndClick(
+         text: args['text']?.toString(),
+         id: args['id']?.toString(),
+         description: args['description']?.toString(),
+         index: args['index'] as int? ?? 0,
+       );
+       return jsonEncode(result);
+     }
+     if (name == AccessibilityToolNames.inputText) {
+       final result = await AccessibilityTools.findAndInput(
+         text: args['text']?.toString() ?? '',
+         target: args['target']?.toString(),
+         targetId: args['target_id']?.toString(),
+       );
+       return jsonEncode(result);
+     }
+     if (name == AccessibilityToolNames.swipeScreen) {
+       final result = await AccessibilityTools.swipe(
+         direction: args['direction']?.toString() ?? 'up',
+       );
+       return jsonEncode(result);
+     }
+     if (name == AccessibilityToolNames.pressButton) {
+       final result = await AccessibilityTools.pressButton(
+         button: args['button']?.toString() ?? 'back',
+       );
+       return jsonEncode(result);
+     }
+     if (name == AccessibilityToolNames.openApp) {
+       final result = await AccessibilityTools.openApp(
+         packageName: args['package_name']?.toString(),
+         appName: args['app_name']?.toString(),
+       );
+       return jsonEncode(result);
      }
     return null;
   }

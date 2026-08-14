@@ -7,6 +7,7 @@ import android.content.Intent
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
+import org.json.JSONObject
 import java.io.File
 import java.io.FileInputStream
 
@@ -23,12 +24,37 @@ class MainActivity : FlutterActivity() {
      private var pendingSaveResult: MethodChannel.Result? = null
      private var pendingSaveSourcePath: String? = null
      private var deviceLocalToolsHandler: DeviceLocalToolsHandler? = null
+    private var accessibilityChannel: MethodChannel? = null
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
          super.configureFlutterEngine(flutterEngine)
          McpOAuthHandler.configure(this, flutterEngine.dartExecutor.binaryMessenger)
          deviceLocalToolsHandler = DeviceLocalToolsHandler(this).also {
              it.configure(flutterEngine.dartExecutor.binaryMessenger)
+         }
+         // Phase 2: 无障碍服务 MethodChannel
+         accessibilityChannel = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "app.accessibility")
+         accessibilityChannel?.setMethodCallHandler { call, result ->
+             val argsJson = call.arguments as? String ?: "{}"
+             val service = AgentAccessibilityService.instance
+             if (service == null) {
+                 result.success(JSONObject().put("error", "NOT_ENABLED").put("message", "无障碍服务未开启，请在系统设置中开启").toString())
+                 return@setMethodCallHandler
+             }
+             when (call.method) {
+                 "readScreen" -> {
+                     val format = JSONObject(argsJson).optString("format", "tree")
+                     result.success(service.readScreen(format))
+                 }
+                 "findAndClick" -> result.success(service.findAndClick(JSONObject(argsJson)))
+                 "findAndInput" -> result.success(service.findAndInput(JSONObject(argsJson)))
+                 "swipe" -> result.success(service.swipe(JSONObject(argsJson)))
+                 "pressButton" -> result.success(service.pressButton(JSONObject(argsJson)))
+                 "openApp" -> result.success(service.openApp(JSONObject(argsJson)))
+                 "takeScreenshot" -> result.success(service.takeScreenshot())
+                 "isEnabled" -> result.success(service != null)
+                 else -> result.notImplemented()
+             }
          }
         processTextChannel = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, processTextChannelName)
         processTextChannel?.setMethodCallHandler { call, result ->
